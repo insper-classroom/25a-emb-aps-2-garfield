@@ -1,0 +1,238 @@
+#include <FreeRTOS.h>
+#include <task.h>
+#include <queue.h>
+#include "pico/stdlib.h"
+#include "hardware/adc.h"
+#include "hardware/uart.h"
+#include <stdio.h>
+
+QueueHandle_t xQueueADC;
+
+typedef struct adc {
+    int axis; 
+    int val;  
+} adc_t;
+
+int media_movel(int new_value, int *buffer, int index) {
+    int sum=0;
+    for (int i = 0; i < 5; i++) {
+        sum += buffer[i];
+    }
+    sum -= buffer[index];
+    buffer[index] = new_value;
+    sum += new_value;
+    return sum / 5;
+}
+
+void x_task(void *p) {
+    adc_init(); 
+    adc_gpio_init(26); 
+
+    int buffer[5] = {2047, 2047, 2047, 2047, 2047};
+    int x_index = 0;
+
+    while (1) {
+        adc_select_input(0); 
+        uint16_t read = adc_read(); 
+        int movimento_filtrado = media_movel(read, buffer, x_index);
+        x_index++;
+        if (x_index > 4) {
+            x_index = 0;
+        }
+        int scaled = (movimento_filtrado - 2047)/8; 
+        if(scaled<30 && scaled > -30) {
+            scaled = 0;
+        }
+        adc_t data = {0, scaled}; 
+        if (scaled!=0){
+            //printf("X: %d\n", scaled);
+            xQueueSend(xQueueADC, &data, pdMS_TO_TICKS(50)); 
+        }
+        vTaskDelay(pdMS_TO_TICKS(200)); 
+    }
+}
+
+void y_task(void *p) {
+    adc_init(); 
+    adc_gpio_init(27); 
+
+    int buffer[5] = {2047, 2047, 2047, 2047, 2047};
+    int y_index = 0;
+
+    while (1) {
+        adc_select_input(1); 
+        uint16_t read = adc_read(); 
+        int movimento_filtrado = media_movel(read, buffer, y_index);
+        y_index++;
+        if (y_index > 4) {
+            y_index = 0;
+        }
+        int scaled = (movimento_filtrado - 2047)/8; 
+        if(scaled<30 && scaled > -30) {
+            scaled = 0;
+        }
+        adc_t data = {1, scaled}; 
+        if (scaled!=0){
+            //printf("Y: %d\n", scaled);
+            xQueueSend(xQueueADC, &data, pdMS_TO_TICKS(50)); 
+        }
+        vTaskDelay(pdMS_TO_TICKS(200)); 
+    }
+}
+
+void uart_task(void *p) {
+    while (1) {
+        adc_t data;
+        if (xQueueReceive(xQueueADC, &data, portMAX_DELAY)) { 
+            putchar_raw(data.axis & 0x01);         
+            putchar_raw(data.val & 0xFF);          
+            putchar_raw((data.val >> 8) & 0xFF);   
+            putchar_raw(0xFF);  
+        }
+    }
+}
+
+int main() {
+    stdio_init_all();
+    adc_init();
+    adc_gpio_init(26);
+    adc_gpio_init(27);
+
+    xQueueADC = xQueueCreate(10, sizeof(adc_t));
+
+    xTaskCreate(x_task, "X Task", 4096, NULL, 1, NULL);
+    xTaskCreate(y_task, "Y Task", 4096, NULL, 1, NULL);
+    xTaskCreate(uart_task, "UART Task", 4096, NULL, 1, NULL);
+
+    vTaskStartScheduler();
+
+    while (true);
+}
+
+--------------------------------------------------
+#include <FreeRTOS.h>
+#include <task.h>
+#include <queue.h>
+#include "pico/stdlib.h"
+#include "hardware/adc.h"
+#include "hardware/gpio.h"
+#include "hardware/uart.h"
+#include <stdio.h>
+
+#define BUTTON_W_PIN 5
+#define BUTTON_A_PIN 6
+#define BUTTON_S_PIN 7
+#define BUTTON_D_PIN 8
+#define BUTTON_M_PIN 9
+#define BUTTON_I_PIN 10
+
+static const struct { int pin; uint8_t axis; } btns[] = {
+    { BUTTON_W_PIN, 2 },
+    { BUTTON_A_PIN, 3 },
+    { BUTTON_S_PIN, 4 },
+    { BUTTON_D_PIN, 5 },
+    { BUTTON_M_PIN, 6 },
+    { BUTTON_I_PIN, 7 },
+};
+static const size_t N_BTNS = sizeof(btns)/sizeof(btns[0]);
+
+typedef struct { int axis; int val; } adc_t;
+static QueueHandle_t xQueueADC;
+
+void send_uart(uint8_t axis, int16_t value) {
+    putchar_raw(axis);
+    putchar_raw(value & 0xFF);
+    putchar_raw((value >> 8) & 0xFF);
+    putchar_raw(0xFF);
+}
+
+void button_task(void *ignored) {
+    TickType_t interval = pdMS_TO_TICKS(100);
+    bool last_state[N_BTNS];
+    for (size_t i = 0; i < N_BTNS; i++) last_state[i] = true;
+    for (;;) {
+        for (size_t i = 0; i < N_BTNS; i++) {
+            int pin     = btns[i].pin;
+            uint8_t axis = btns[i].axis;
+            bool now    = gpio_get(pin);
+            if (!now && last_state[i]) send_uart(axis, 1);
+            else if ( now && !last_state[i]) send_uart(axis, 0);
+            last_state[i] = now;
+        }
+        vTaskDelay(interval);
+    }
+}
+
+int media_movel(int new_value, int *buffer, int index) {
+    int sum = 0;
+    for (int i = 0; i < 5; i++) sum += buffer[i];
+    sum -= buffer[index];
+    buffer[index] = new_value;
+    sum += new_value;
+    return sum / 5;
+}
+
+void x_task(void *p) {
+    adc_init(); adc_gpio_init(26);
+    int buffer[5] = {2047,2047,2047,2047,2047}, idx = 0;
+    for (;;) {
+        adc_select_input(0);
+        uint16_t raw = adc_read();
+        int mv = media_movel(raw, buffer, idx++);
+        if (idx > 4) idx = 0;
+        int scaled = (mv - 2047) / 8;
+        if (abs(scaled) <= 30) {
+            scaled = 0;
+        }
+        if (scaled != 0) {
+            adc_t d = {0, scaled};
+            xQueueSend(xQueueADC, &d, pdMS_TO_TICKS(50));
+        }
+        vTaskDelay(pdMS_TO_TICKS(200));
+    }
+}
+
+void y_task(void *p) {
+    adc_init(); adc_gpio_init(27);
+    int buffer[5] = {2047,2047,2047,2047,2047}, idx = 0;
+    for (;;) {
+        adc_select_input(1);
+        uint16_t raw = adc_read();
+        int mv = media_movel(raw, buffer, idx++);
+        if (idx > 4) idx = 0;
+        int scaled = (mv - 2047) / 8;
+        if (scaled < 30 && scaled > -30) scaled = 0;
+        if (scaled != 0) {
+            adc_t d = {1, scaled};
+            xQueueSend(xQueueADC, &d, pdMS_TO_TICKS(50));
+        }
+        vTaskDelay(pdMS_TO_TICKS(200));
+    }
+}
+
+void uart_task(void *p) {
+    for (;;) {
+        adc_t d;
+        if (xQueueReceive(xQueueADC, &d, portMAX_DELAY)) {
+            send_uart(d.axis, d.val);
+        }
+    }
+}
+
+int main() {
+    stdio_init_all();
+    for (size_t i = 0; i < N_BTNS; i++) {
+        gpio_init(btns[i].pin);
+        gpio_set_dir(btns[i].pin, GPIO_IN);
+        gpio_pull_up(btns[i].pin);
+    }
+    xQueueADC = xQueueCreate(10, sizeof(adc_t));
+
+    xTaskCreate(button_task, "BTN", 1024, NULL, 1, NULL);
+    xTaskCreate(x_task,         "X",   4096, NULL, 1, NULL);
+    xTaskCreate(y_task,         "Y",   4096, NULL, 1, NULL);
+    xTaskCreate(uart_task,      "UART",4096, NULL, 1, NULL);
+
+    vTaskStartScheduler();
+    while (1) {}
+}

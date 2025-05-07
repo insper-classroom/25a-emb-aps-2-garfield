@@ -6,13 +6,39 @@ import tkinter as tk
 from tkinter import ttk
 from tkinter import messagebox
 from time import sleep
-
+pyautogui.PAUSE = 0.0
+pressed_keys = {}
+BTN_KEYS = {
+    7: "W",  # botão W
+    8: "A",  # botão A
+    9: "D",
+    10: "I", # botão I
+    11: "M", # botão M
+    12: 'q', 
+}
 def move_mouse(axis, value):
-    """Move o mouse de acordo com o eixo e valor recebidos."""
+    """
+    Se axis == 0 ou 1, move o mouse.
+    Se axis em BTN_KEYS, mantém keyDown enquanto value==1
+    e keyUp quando value==0.
+    """
+    # movimento do mouse
     if axis == 0:
         pyautogui.moveRel(value, 0)
     elif axis == 1:
         pyautogui.moveRel(0, value)
+
+    # botões mapeados
+    elif axis in BTN_KEYS:
+        key = BTN_KEYS[axis]
+        # pressionar
+        if value == 1 and not pressed_keys.get(axis, False):
+            pyautogui.keyDown(key)
+            pressed_keys[axis] = True
+        # soltar
+        elif value == 0 and pressed_keys.get(axis, False):
+            pyautogui.keyUp(key)
+            pressed_keys[axis] = False
 
 def controle(ser):
     """
